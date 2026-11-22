@@ -42,9 +42,10 @@ export default function HostDashboard() {
     if (mapRef.current) return;
     const map = L.map(mapContainerRef.current, { zoomControl: false }).setView([12.9716, 77.5946], 18);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxNativeZoom: 19,
       maxZoom: 21,
-      attribution: '&copy; OpenStreetMap &copy; CARTO',
+      attribution: '&copy; OpenStreetMap contributors',
     }).addTo(map);
 
     map.on('click', (e) => {
