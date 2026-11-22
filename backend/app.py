@@ -53,6 +53,7 @@ def handle_rejoin_host(data):
 def handle_join_player(data):
     code = data.get("room_code", "").strip().upper()
     name = data.get("name", "Player").strip()[:20]
+    avatar = data.get("avatar", "runner:#00e676").strip()[:40]
     session = sessions.get(code)
     if not session:
         emit("join_error", {"message": "Invalid Room Code. Verify on Host Console."})
@@ -60,7 +61,7 @@ def handle_join_player(data):
 
     join_room(code)
     sid_to_room[request.sid] = code
-    player = session.add_player(request.sid, name)
+    player = session.add_player(request.sid, name, avatar)
     emit("joined_success", {"player": player.to_dict(), "light_state": session.light_state})
     socketio.emit("state_update", session.snapshot(), room=code)
 

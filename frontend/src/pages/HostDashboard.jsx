@@ -2,11 +2,73 @@ import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import L from 'leaflet';
 import { motion, AnimatePresence } from 'motion/react';
-import { Crosshair, Flag, Hexagon, Trash2, Copy, Check } from 'lucide-react';
+import { Crosshair, Flag, Hexagon, Trash2, Copy, Check, Maximize2 } from 'lucide-react';
 import { TextScramble } from '../components/motion-primitives/TextScramble';
 import { BorderTrail } from '../components/motion-primitives/BorderTrail';
 import { SlidingNumber } from '../components/motion-primitives/SlidingNumber';
 import { GlowEffect } from '../components/motion-primitives/GlowEffect';
+
+const AVATAR_ICONS = {
+  doll: '👧',
+  p456: '🟢',
+  runner: '🏃',
+  squid: '🦑',
+  circle: '○',
+  triangle: '△',
+  square: '□',
+  vip: '🎭',
+};
+
+function parseAvatar(raw) {
+  const [id, customColor] = (raw || 'runner').split(':');
+  return {
+    glyph: AVATAR_ICONS[id] || '🏃',
+    customColor: customColor || null,
+  };
+}
+
+function buildAvatarMarkerIcon(player) {
+  const isRunning = player.status === 'ACTIVE' && (player.speed_mps ?? 0) > 0.4;
+  const { glyph, customColor } = parseAvatar(player.avatar);
+
+  const ringColor =
+    player.status === 'ELIMINATED'
+      ? '#ff1744'
+      : player.status === 'WINNER'
+      ? '#ffb300'
+      : customColor || '#00e676';
+
+  const avatarGlyph =
+    player.status === 'ELIMINATED'
+      ? '💀'
+      : player.status === 'WINNER'
+      ? '🏆'
+      : glyph;
+
+  const pulseHtml =
+    player.status === 'ACTIVE'
+      ? `<span class="gps-pulse-ring absolute -inset-1.5 rounded-full border-2" style="border-color:${ringColor}"></span>`
+      : '';
+
+  const runBadgeHtml = isRunning
+    ? `<span class="absolute -bottom-2.5 left-1/2 -translate-x-1/2 rounded bg-emerald-400 px-1 font-['JetBrains_Mono'] text-[8px] font-black text-zinc-950 shadow">RUN</span>`
+    : '';
+
+  return L.divIcon({
+    className: 'smooth-gps',
+    html: `
+      <div class="relative flex h-9 w-9 items-center justify-center rounded-full border-2 bg-zinc-900 shadow-lg ${
+        isRunning ? 'runner-bob' : ''
+      }" style="border-color:${ringColor}">
+        ${pulseHtml}
+        <span class="text-base leading-none">${avatarGlyph}</span>
+        ${runBadgeHtml}
+      </div>
+    `,
+    iconSize: [36, 36],
+    iconAnchor: [18, 18],
+  });
+}
 
 export default function HostDashboard() {
   const [gameState, setGameState] = useState({
@@ -26,8 +88,12 @@ export default function HostDashboard() {
   const roomCodeRef = useRef(null);
   const mapRef = useRef(null);
   const mapContainerRef = useRef(null);
+  const hasAutoCenteredRef = useRef(false);
   const layersRef = useRef({
     markers: {},
+    markerMeta: {},
+    trails: {},
+    trailCoords: {},
     finishMarker: null,
     finishCircle: null,
     fencePolygon: null,
@@ -102,17 +168,20 @@ export default function HostDashboard() {
     if (gameState.finish_line) {
       const ll = [gameState.finish_line.lat, gameState.finish_line.lon];
       if (!layersRef.current.finishMarker) {
-        layersRef.current.finishMarker = L.circleMarker(ll, {
-          radius: 6,
-          color: '#ffb300',
-          fillColor: '#ffb300',
-          fillOpacity: 1,
-        }).addTo(map);
+        const flagIcon = L.divIcon({
+          className: '',
+          html: `<div class="flex h-8 w-8 items-center justify-center rounded-full border-2 border-amber-300 bg-zinc-950 text-base shadow-xl">🏁</div>`,
+          iconSize: [32, 32],
+          iconAnchor: [16, 16],
+        });
+        layersRef.current.finishMarker = L.marker(ll, { icon: flagIcon })
+          .addTo(map)
+          .bindTooltip('FINISH LINE', { permanent: true, direction: 'top', offset: [0, -14] });
         layersRef.current.finishCircle = L.circle(ll, {
           radius: 5,
           color: '#ffb300',
           weight: 2,
-          fillOpacity: 0.2,
+          fillOpacity: 0.22,
         }).addTo(map);
       } else {
         layersRef.current.finishMarker.setLatLng(ll);
@@ -133,27 +202,72 @@ export default function HostDashboard() {
     const activeIds = new Set();
     gameState.players.forEach((p) => {
       activeIds.add(p.player_id);
-      if (p.lat !== null && p.lon !== null) {
-        const hex = p.status === 'ACTIVE' ? '#00e676' : p.status === 'WINNER' ? '#ffb300' : '#ff1744';
-        const pulseHtml =
-          p.status === 'ACTIVE'
-            ? `<span class="gps-pulse-ring absolute -inset-1.5 rounded-full border-2" style="border-color:${hex}"></span>`
-            : '';
 
-        const icon = L.divIcon({
-          className: 'smooth-gps',
-          html: `<div class="relative h-4 w-4 rounded-full border-2 border-zinc-950" style="background:${hex}">${pulseHtml}</div>`,
-          iconSize: [16, 16],
-          iconAnchor: [8, 8],
-        });
+      if (p.lat === null || p.lon === null) {
+        if (layersRef.current.markers[p.player_id]) {
+          map.removeLayer(layersRef.current.markers[p.player_id]);
+          delete layersRef.current.markers[p.player_id];
+          delete layersRef.current.markerMeta[p.player_id];
+        }
+        if (layersRef.current.trails[p.player_id]) {
+          map.removeLayer(layersRef.current.trails[p.player_id]);
+          delete layersRef.current.trails[p.player_id];
+          delete layersRef.current.trailCoords[p.player_id];
+        }
+        return;
+      }
 
-        if (!layersRef.current.markers[p.player_id]) {
-          layersRef.current.markers[p.player_id] = L.marker([p.lat, p.lon], { icon })
-            .addTo(map)
-            .bindTooltip(p.name, { permanent: true, direction: 'top', offset: [0, -8] });
-        } else {
-          layersRef.current.markers[p.player_id].setLatLng([p.lat, p.lon]);
-          layersRef.current.markers[p.player_id].setIcon(icon);
+      if (!hasAutoCenteredRef.current) {
+        hasAutoCenteredRef.current = true;
+        map.setView([p.lat, p.lon], 19);
+      }
+
+      const isRunning = p.status === 'ACTIVE' && (p.speed_mps ?? 0) > 0.4;
+      const metaKey = `${p.status}|${isRunning}|${p.avatar}`;
+      const { customColor } = parseAvatar(p.avatar);
+
+      const coords = layersRef.current.trailCoords[p.player_id] || [];
+      const lastCoord = coords[coords.length - 1];
+      if (!lastCoord || lastCoord[0] !== p.lat || lastCoord[1] !== p.lon) {
+        coords.push([p.lat, p.lon]);
+        if (coords.length > 25) coords.shift();
+        layersRef.current.trailCoords[p.player_id] = coords;
+      }
+
+      const trailColor =
+        p.status === 'ELIMINATED'
+          ? '#ff1744'
+          : p.status === 'WINNER'
+          ? '#ffb300'
+          : customColor || '#00e676';
+
+      if (!layersRef.current.trails[p.player_id]) {
+        layersRef.current.trails[p.player_id] = L.polyline(coords, {
+          color: trailColor,
+          weight: 3,
+          opacity: 0.65,
+          dashArray: '4, 6',
+        }).addTo(map);
+      } else {
+        layersRef.current.trails[p.player_id].setLatLngs(coords);
+        layersRef.current.trails[p.player_id].setStyle({ color: trailColor });
+      }
+
+      if (!layersRef.current.markers[p.player_id]) {
+        const icon = buildAvatarMarkerIcon(p);
+        layersRef.current.markers[p.player_id] = L.marker([p.lat, p.lon], { icon })
+          .addTo(map)
+          .bindTooltip(`#${p.contestant_no || '001'} ${p.name}`, {
+            permanent: true,
+            direction: 'top',
+            offset: [0, -18],
+          });
+        layersRef.current.markerMeta[p.player_id] = metaKey;
+      } else {
+        layersRef.current.markers[p.player_id].setLatLng([p.lat, p.lon]);
+        if (layersRef.current.markerMeta[p.player_id] !== metaKey) {
+          layersRef.current.markers[p.player_id].setIcon(buildAvatarMarkerIcon(p));
+          layersRef.current.markerMeta[p.player_id] = metaKey;
         }
       }
     });
@@ -162,6 +276,15 @@ export default function HostDashboard() {
       if (!activeIds.has(id)) {
         map.removeLayer(layersRef.current.markers[id]);
         delete layersRef.current.markers[id];
+        delete layersRef.current.markerMeta[id];
+      }
+    });
+
+    Object.keys(layersRef.current.trails).forEach((id) => {
+      if (!activeIds.has(id)) {
+        map.removeLayer(layersRef.current.trails[id]);
+        delete layersRef.current.trails[id];
+        delete layersRef.current.trailCoords[id];
       }
     });
   }, [gameState, mapMode]);
@@ -180,8 +303,23 @@ export default function HostDashboard() {
 
   const centerOnHostGPS = () => {
     navigator.geolocation?.getCurrentPosition((pos) => {
+      hasAutoCenteredRef.current = true;
       mapRef.current?.setView([pos.coords.latitude, pos.coords.longitude], 19);
     });
+  };
+
+  const fitArenaBounds = () => {
+    const pts = [];
+    if (gameState.finish_line) {
+      pts.push([gameState.finish_line.lat, gameState.finish_line.lon]);
+    }
+    gameState.players.forEach((p) => {
+      if (p.lat !== null && p.lon !== null) pts.push([p.lat, p.lon]);
+    });
+    gameState.geofence.forEach((v) => pts.push(v));
+    if (pts.length > 0 && mapRef.current) {
+      mapRef.current.fitBounds(L.latLngBounds(pts), { padding: [50, 50], maxZoom: 20 });
+    }
   };
 
   const copyRoomCode = () => {
@@ -265,17 +403,25 @@ export default function HostDashboard() {
               <Flag className="h-3.5 w-3.5 text-amber-400" /> Finish Line
             </button>
           </div>
-          <button
-            onClick={toggleGeofence}
-            className={`mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border py-2 text-xs font-bold ${
-              mapMode === 'FENCE'
-                ? 'border-cyan-400 bg-cyan-500/20 text-cyan-300'
-                : 'border-zinc-700 bg-zinc-900 hover:border-cyan-400'
-            }`}
-          >
-            <Hexagon className="h-3.5 w-3.5 text-cyan-400" />
-            {mapMode === 'FENCE' ? `Save Polygon (${draftFence.length} pts)` : 'Draw Geofence Boundary'}
-          </button>
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            <button
+              onClick={toggleGeofence}
+              className={`col-span-2 flex items-center justify-center gap-1.5 rounded-lg border py-2 text-xs font-bold ${
+                mapMode === 'FENCE'
+                  ? 'border-cyan-400 bg-cyan-500/20 text-cyan-300'
+                  : 'border-zinc-700 bg-zinc-900 hover:border-cyan-400'
+              }`}
+            >
+              <Hexagon className="h-3.5 w-3.5 text-cyan-400" />
+              {mapMode === 'FENCE' ? `Save (${draftFence.length} pts)` : 'Draw Geofence'}
+            </button>
+            <button
+              onClick={fitArenaBounds}
+              className="flex items-center justify-center gap-1 rounded-lg border border-zinc-700 bg-zinc-900 py-2 text-xs font-bold hover:border-emerald-400"
+            >
+              <Maximize2 className="h-3.5 w-3.5 text-emerald-400" /> Fit All
+            </button>
+          </div>
         </div>
 
         <div className="relative rounded-xl border border-zinc-800 bg-zinc-950 p-3.5">
@@ -323,32 +469,54 @@ export default function HostDashboard() {
 
           <div className="flex max-h-44 flex-col gap-1.5 overflow-y-auto">
             <AnimatePresence initial={false}>
-              {gameState.players.map((p) => (
-                <motion.div
-                  layout
-                  key={p.player_id}
-                  initial={{ opacity: 0, y: -8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.92 }}
-                  onClick={() => setSelectedPlayer(p)}
-                  className="flex cursor-pointer items-center justify-between rounded-lg border border-zinc-800/90 bg-zinc-900 px-2.5 py-1.5 text-xs hover:border-zinc-600"
-                >
-                  <span className="font-bold">
-                    {p.status === 'ACTIVE' ? '○' : p.status === 'WINNER' ? '□' : '△'} {p.name}
-                  </span>
-                  <span
-                    className={`rounded px-1.5 py-0.5 font-['JetBrains_Mono'] text-[10px] font-bold ${
-                      p.status === 'ACTIVE'
-                        ? 'bg-emerald-500/15 text-emerald-400'
-                        : p.status === 'WINNER'
-                        ? 'bg-amber-500/20 text-amber-300'
-                        : 'bg-rose-500/15 text-rose-400'
-                    }`}
+              {gameState.players.map((p) => {
+                const isRunning = p.status === 'ACTIVE' && (p.speed_mps ?? 0) > 0.4;
+                const { glyph } = parseAvatar(p.avatar);
+                return (
+                  <motion.div
+                    layout
+                    key={p.player_id}
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.92 }}
+                    onClick={() => {
+                      setSelectedPlayer(p);
+                      if (p.lat !== null && p.lon !== null) {
+                        mapRef.current?.panTo([p.lat, p.lon]);
+                      }
+                    }}
+                    className="flex cursor-pointer items-center justify-between rounded-lg border border-zinc-800/90 bg-zinc-900 px-2.5 py-1.5 text-xs hover:border-zinc-600"
                   >
-                    {p.status}
-                  </span>
-                </motion.div>
-              ))}
+                    <span className="flex items-center gap-2 font-bold">
+                      <span className="text-base">{glyph}</span>
+                      <span>
+                        <span className="font-['JetBrains_Mono'] text-[11px] text-zinc-400">
+                          #{p.contestant_no || '001'}{' '}
+                        </span>
+                        {p.name}
+                      </span>
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {isRunning && (
+                        <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 font-['JetBrains_Mono'] text-[10px] font-bold text-cyan-300">
+                          {p.speed_mps} m/s
+                        </span>
+                      )}
+                      <span
+                        className={`rounded px-1.5 py-0.5 font-['JetBrains_Mono'] text-[10px] font-bold ${
+                          p.status === 'ACTIVE'
+                            ? 'bg-emerald-500/15 text-emerald-400'
+                            : p.status === 'WINNER'
+                            ? 'bg-amber-500/20 text-amber-300'
+                            : 'bg-rose-500/15 text-rose-400'
+                        }`}
+                      >
+                        {p.status}
+                      </span>
+                    </div>
+                  </motion.div>
+                );
+              })}
             </AnimatePresence>
           </div>
         </div>
@@ -374,7 +542,7 @@ export default function HostDashboard() {
             >
               {mapMode === 'FINISH'
                 ? 'CLICK MAP TO SET FINISH LINE (5m RADIUS)'
-                : 'CLICK 3+ CORNERS ON MAP, THEN CLICK SAVE POLYGON'}
+                : 'CLICK 3+ CORNERS ON MAP, THEN CLICK SAVE'}
             </motion.div>
           )}
         </AnimatePresence>
@@ -390,7 +558,12 @@ export default function HostDashboard() {
               <GlowEffect colors={['#ff0055', '#00e5ff']} />
               <div className="relative">
                 <div className="flex items-center justify-between">
-                  <span className="font-bold text-white">{selectedPlayer.name}</span>
+                  <span className="flex items-center gap-2 font-bold text-white">
+                    <span className="text-lg">{parseAvatar(selectedPlayer.avatar).glyph}</span>
+                    <span>
+                      #{selectedPlayer.contestant_no || '001'} {selectedPlayer.name}
+                    </span>
+                  </span>
                   <button
                     onClick={() => setSelectedPlayer(null)}
                     className="font-['JetBrains_Mono'] text-xs text-zinc-400 hover:text-white"

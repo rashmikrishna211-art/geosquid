@@ -1,9 +1,8 @@
 import math
-import time
 import random
-import string
-from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional
+import time
+from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -15,81 +14,50 @@ class GeoPoint:
 
 
 class MotionValidator:
-    """
-    Mitigates GPS multipath drift (Risk R-01) and cellular packet drops (Risk R-02)
-    using the Haversine formula with noise deadband filtering.
-    """
     EARTH_RADIUS_M = 6371000.0
-
-    def __init__(
-        self,
-        speed_threshold_mps: float = 0.8,
-        min_distance_m: float = 1.5,
-        max_accuracy_m: float = 15.0,
-        max_ping_gap_s: float = 3.5,
-    ):
-        self.speed_threshold_mps = speed_threshold_mps
-        self.min_distance_m = min_distance_m
-        self.max_accuracy_m = max_accuracy_m
-        self.max_ping_gap_s = max_ping_gap_s
+    JITTER_THRESHOLD_M = 1.2
+    RED_SPEED_LIMIT_MPS = 0.65
 
     @classmethod
     def haversine_distance(cls, p1: GeoPoint, p2: GeoPoint) -> float:
         phi1, phi2 = math.radians(p1.lat), math.radians(p2.lat)
-        dphi = math.radians(p2.lat - p1.lat)
-        dlambda = math.radians(p2.lon - p1.lon)
+        d_phi = math.radians(p2.lat - p1.lat)
+        d_lambda = math.radians(p2.lon - p1.lon)
 
         a = (
-            math.sin(dphi / 2.0) ** 2
-            + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
+            math.sin(d_phi / 2.0) ** 2
+            + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2.0) ** 2
         )
         c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
         return cls.EARTH_RADIUS_M * c
 
-    def evaluate_movement(
-        self, prev_point: GeoPoint, curr_point: GeoPoint, light_state: str
-    ) -> Tuple[bool, float, str]:
-        """Returns (is_violation, speed_mps, diagnostic_reason)."""
-        if light_state != "RED":
-            return False, 0.0, "GREEN_LIGHT_ALLOWED"
-
-        if curr_point.accuracy > self.max_accuracy_m:
-            return False, 0.0, "LOW_GPS_ACCURACY_IGNORED"
-
-        dt = curr_point.timestamp - prev_point.timestamp
-        if dt <= 0 or dt > self.max_ping_gap_s:
-            return False, 0.0, "STALE_PING_GAP_IGNORED"
-
-        distance = self.haversine_distance(prev_point, curr_point)
-        speed = distance / dt
-
-        if distance < self.min_distance_m:
-            return False, round(speed, 2), "GPS_JITTER_FILTERED"
-
-        if speed > self.speed_threshold_mps:
-            return True, round(speed, 2), "RED_LIGHT_MOVEMENT_VIOLATION"
-
-        return False, round(speed, 2), "WITHIN_THRESHOLD"
+    @classmethod
+    def calculate_filtered_speed(cls, p1: GeoPoint, p2: GeoPoint) -> float:
+        dt = p2.timestamp - p1.timestamp
+        if dt <= 0:
+            return 0.0
+        dist = cls.haversine_distance(p1, p2)
+        if dist < cls.JITTER_THRESHOLD_M:
+            return 0.0
+        return dist / dt
 
 
+@dataclass
 class GeofenceBoundary:
-    """Enforces play-area boundaries via the Ray-Casting Point-in-Polygon algorithm."""
+    vertices: list[tuple[float, float]] = field(default_factory=list)
 
-    def __init__(self, vertices: Optional[List[Tuple[float, float]]] = None):
-        self.vertices: List[Tuple[float, float]] = vertices or []
-
-    def is_inside(self, lat: float, lon: float) -> bool:
-        if len(self.vertices) < 3:
-            return True
-
-        inside = False
+    def contains(self, point: GeoPoint) -> bool:
         n = len(self.vertices)
+        if n < 3:
+            return True
+        x, y = point.lat, point.lon
+        inside = False
         j = n - 1
         for i in range(n):
-            yi, xi = self.vertices[i]
-            yj, xj = self.vertices[j]
-            intersect = ((yi > lat) != (yj > lat)) and (
-                lon < (xj - xi) * (lat - yi) / (yj - yi + 1e-12) + xi
+            xi, yi = self.vertices[i]
+            xj, yj = self.vertices[j]
+            intersect = ((yi > y) != (yj > y)) and (
+                x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi
             )
             if intersect:
                 inside = not inside
@@ -98,134 +66,115 @@ class GeofenceBoundary:
 
 
 @dataclass
-class Player:
+class PlayerState:
     player_id: str
     name: str
-    status: str = "ACTIVE"  # ACTIVE | ELIMINATED | WINNER
-    elimination_reason: Optional[str] = None
+    avatar: str = "runner:#00e676"
+    contestant_no: str = "001"
+    status: str = "ACTIVE"
     last_point: Optional[GeoPoint] = None
-    freeze_point: Optional[GeoPoint] = None
     speed_mps: float = 0.0
-    finish_time_s: Optional[float] = None
+    elimination_reason: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
             "player_id": self.player_id,
             "name": self.name,
+            "avatar": self.avatar,
+            "contestant_no": self.contestant_no,
             "status": self.status,
-            "elimination_reason": self.elimination_reason,
             "lat": self.last_point.lat if self.last_point else None,
             "lon": self.last_point.lon if self.last_point else None,
             "accuracy": self.last_point.accuracy if self.last_point else None,
-            "speed_mps": self.speed_mps,
-            "finish_time_s": self.finish_time_s,
+            "speed_mps": round(self.speed_mps, 2),
+            "elimination_reason": self.elimination_reason,
         }
 
 
 class GameSession:
-    """Manages match lifecycle, state transitions, and ephemeral RAM purging."""
-    WIN_RADIUS_M = 5.0
+    FINISH_RADIUS_M = 5.0
 
     def __init__(self, room_code: str):
         self.room_code = room_code
-        self.light_state: str = "LOBBY"  # LOBBY | GREEN | RED | ENDED
-        self.start_time: Optional[float] = None
-        self.players: Dict[str, Player] = {}
-        self.validator = MotionValidator()
-        self.geofence = GeofenceBoundary()
+        self.light_state = "LOBBY"
         self.finish_line: Optional[GeoPoint] = None
-        self.event_log: List[str] = []
+        self.geofence = GeofenceBoundary()
+        self.players: dict[str, PlayerState] = {}
+        self.logs: list[str] = []
+        self._next_number = 1
 
     @staticmethod
     def generate_room_code() -> str:
-        return "SQ-" + "".join(random.choices(string.digits, k=4))
+        return f"SQ-{random.randint(1000, 9999)}"
 
     def log(self, message: str):
         ts = time.strftime("%H:%M:%S")
-        self.event_log.insert(0, f"[{ts}] {message}")
-        self.event_log = self.event_log[:50]
+        self.logs.insert(0, f"[{ts}] {message}")
+        self.logs = self.logs[:40]
 
-    def add_player(self, player_id: str, name: str) -> Player:
-        player = Player(player_id=player_id, name=name)
+    def add_player(self, player_id: str, name: str, avatar: str = "runner:#00e676") -> PlayerState:
+        contestant_no = f"{self._next_number:03d}"
+        self._next_number += 1
+        player = PlayerState(
+            player_id=player_id,
+            name=name or f"Player {contestant_no}",
+            avatar=avatar or "runner:#00e676",
+            contestant_no=contestant_no,
+        )
         self.players[player_id] = player
-        self.log(f"{name} joined the lobby.")
+        self.log(f"#{contestant_no} {player.name} entered the arena.")
         return player
 
     def remove_player(self, player_id: str):
         player = self.players.pop(player_id, None)
         if player:
-            self.log(f"{player.name} disconnected.")
+            self.log(f"#{player.contestant_no} {player.name} disconnected (RAM cleared).")
 
     def set_light_state(self, new_state: str):
         self.light_state = new_state
-        if new_state == "GREEN" and self.start_time is None:
-            self.start_time = time.time()
-        if new_state == "RED":
-            for p in self.players.values():
-                if p.status == "ACTIVE" and p.last_point:
-                    p.freeze_point = p.last_point
-        self.log(f"Host switched signal to {new_state}.")
+        self.log(f"Signal switched to {new_state}.")
 
     def process_gps_ping(self, player_id: str, point: GeoPoint) -> Optional[dict]:
         player = self.players.get(player_id)
-        if not player:
+        if not player or player.status != "ACTIVE":
             return None
 
-        if player.status != "ACTIVE":
-            player.last_point = point
-            return None
-
-        # 1. Polygon Geofence Boundary Check
-        if self.light_state in ("GREEN", "RED") and not self.geofence.is_inside(point.lat, point.lon):
-            player.status = "ELIMINATED"
-            player.elimination_reason = "OUTSIDE_GEOFENCE_BOUNDARY"
-            player.last_point = point
-            self.log(f"ELIMINATED: {player.name} crossed outside geofence.")
-            self._check_auto_end()
-            return {"event": "eliminated", "player": player.to_dict()}
-
-        # 2. Red Light Speed & Displacement Check
-        if self.light_state == "RED" and player.freeze_point is not None:
-            violated, speed, reason = self.validator.evaluate_movement(
-                player.freeze_point, point, "RED"
-            )
-            player.speed_mps = speed
-            if violated:
-                player.status = "ELIMINATED"
-                player.elimination_reason = reason
-                player.last_point = point
-                self.log(f"ELIMINATED: {player.name} moved at {speed} m/s on RED LIGHT.")
-                self._check_auto_end()
-                return {"event": "eliminated", "player": player.to_dict()}
-
-        # 3. Finish Line Proximity Win Check
-        if self.light_state == "GREEN" and self.finish_line is not None:
-            dist_to_finish = MotionValidator.haversine_distance(point, self.finish_line)
-            if dist_to_finish <= self.WIN_RADIUS_M:
-                player.status = "WINNER"
-                player.finish_time_s = round(time.time() - (self.start_time or time.time()), 1)
-                player.last_point = point
-                self.log(f"WINNER: {player.name} cleared in {player.finish_time_s}s!")
-                self._check_auto_end()
-                return {"event": "winner", "player": player.to_dict()}
+        if player.last_point is not None:
+            speed = MotionValidator.calculate_filtered_speed(player.last_point, point)
+        else:
+            speed = 0.0
 
         player.last_point = point
-        self._check_auto_end()
+        player.speed_mps = speed
+
+        if len(self.geofence.vertices) >= 3 and not self.geofence.contains(point):
+            player.status = "ELIMINATED"
+            player.elimination_reason = "OUT_OF_BOUNDS"
+            self.log(f"ELIMINATED: #{player.contestant_no} {player.name} left geofence.")
+            return {"event": "eliminated", "reason": "OUT_OF_BOUNDS"}
+
+        if self.finish_line is not None:
+            dist_to_finish = MotionValidator.haversine_distance(point, self.finish_line)
+            if dist_to_finish <= self.FINISH_RADIUS_M:
+                player.status = "WINNER"
+                self.log(f"WINNER: #{player.contestant_no} {player.name} crossed finish line!")
+                return {"event": "winner"}
+
+        if self.light_state == "RED" and speed > MotionValidator.RED_SPEED_LIMIT_MPS:
+            player.status = "ELIMINATED"
+            player.elimination_reason = "MOTION_DETECTED"
+            self.log(
+                f"ELIMINATED: #{player.contestant_no} {player.name} moved ({speed:.2f} m/s) on RED."
+            )
+            return {"event": "eliminated", "reason": "MOTION_DETECTED"}
+
         return None
 
-    def _check_auto_end(self):
-        if self.light_state in ("GREEN", "RED") and len(self.players) > 0:
-            active_count = sum(1 for p in self.players.values() if p.status == "ACTIVE")
-            if active_count == 0:
-                self.light_state = "ENDED"
-                self.log("All players finished or eliminated. Match ENDED.")
-
     def purge_sensitive_data(self):
-        """Module 1 SE Ethics: Purge all GPS coordinates from volatile RAM post-match."""
         for p in self.players.values():
             p.last_point = None
-            p.freeze_point = None
-        self.log("ETHICAL PURGE: All player GPS coordinates wiped from RAM.")
+            p.speed_mps = 0.0
+        self.log("All player GPS coordinates purged from volatile RAM.")
 
     def snapshot(self) -> dict:
         return {
@@ -238,5 +187,5 @@ class GameSession:
             ),
             "geofence": self.geofence.vertices,
             "players": [p.to_dict() for p in self.players.values()],
-            "logs": self.event_log,
+            "logs": self.logs,
         }
