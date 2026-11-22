@@ -1,16 +1,18 @@
-# React + Vite
+# GeoSquid
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Real-time GPS-based *Red Light, Green Light* mobile-web game built with **Flask-SocketIO**, **React**, **Leaflet**, and the **Web Audio API**.
 
-Currently, two official plugins are available:
+## Architecture & Routes
+- **Landing Page (`/`)**: Entry screen to launch the Host Console or join as a Player.
+- **Host Console (`/host`)**: Generates `SQ-XXXX` room codes, calibrates the finish line and geofence polygon, toggles `GREEN` / `RED` signals, tracks live player avatars and movement trails, and purges volatile GPS data from RAM.
+- **Player Client (`/player`)**: Join with a room code, customize avatar theme/seed and aura color, view the destination radar mini-map, and receive Web Audio + haptic feedback.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Local Setup
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+### Backend
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python app.py
