@@ -42,11 +42,11 @@ class MotionValidator:
 
         dist = self.haversine_distance(p1, p2)
         if dist < self.min_distance_m:
-            return False, 0.0, "JITTER_IGNORED"
+            return False, 0.0, "GPS_JITTER_FILTERED"
 
         speed = dist / dt
         if light_state == "RED" and speed > self.speed_threshold_mps:
-            return True, speed, "MOTION_DETECTED"
+            return True, speed, "RED_LIGHT_MOVEMENT_VIOLATION"
 
         return False, speed, "OK"
 
