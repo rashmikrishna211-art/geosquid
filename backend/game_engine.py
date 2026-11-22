@@ -15,8 +15,10 @@ class GeoPoint:
 
 class MotionValidator:
     EARTH_RADIUS_M = 6371000.0
-    JITTER_THRESHOLD_M = 1.2
-    RED_SPEED_LIMIT_MPS = 0.65
+
+    def __init__(self, speed_threshold_mps: float = 0.8, min_distance_m: float = 1.5):
+        self.speed_threshold_mps = speed_threshold_mps
+        self.min_distance_m = min_distance_m
 
     @classmethod
     def haversine_distance(cls, p1: GeoPoint, p2: GeoPoint) -> float:
@@ -31,38 +33,47 @@ class MotionValidator:
         c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
         return cls.EARTH_RADIUS_M * c
 
-    @classmethod
-    def calculate_filtered_speed(cls, p1: GeoPoint, p2: GeoPoint) -> float:
+    def evaluate_movement(
+        self, p1: GeoPoint, p2: GeoPoint, light_state: str
+    ) -> tuple[bool, float, str]:
         dt = p2.timestamp - p1.timestamp
         if dt <= 0:
-            return 0.0
-        dist = cls.haversine_distance(p1, p2)
-        if dist < cls.JITTER_THRESHOLD_M:
-            return 0.0
-        return dist / dt
+            return False, 0.0, "OK"
+
+        dist = self.haversine_distance(p1, p2)
+        if dist < self.min_distance_m:
+            return False, 0.0, "JITTER_IGNORED"
+
+        speed = dist / dt
+        if light_state == "RED" and speed > self.speed_threshold_mps:
+            return True, speed, "MOTION_DETECTED"
+
+        return False, speed, "OK"
 
 
 @dataclass
 class GeofenceBoundary:
     vertices: list[tuple[float, float]] = field(default_factory=list)
 
-    def contains(self, point: GeoPoint) -> bool:
+    def is_inside(self, lat: float, lon: float) -> bool:
         n = len(self.vertices)
         if n < 3:
             return True
-        x, y = point.lat, point.lon
         inside = False
         j = n - 1
         for i in range(n):
             xi, yi = self.vertices[i]
             xj, yj = self.vertices[j]
-            intersect = ((yi > y) != (yj > y)) and (
-                x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi
+            intersect = ((yi > lon) != (yj > lon)) and (
+                lat < (xj - xi) * (lon - yi) / ((yj - yi) or 1e-12) + xi
             )
             if intersect:
                 inside = not inside
             j = i
         return inside
+
+    def contains(self, point: GeoPoint) -> bool:
+        return self.is_inside(point.lat, point.lon)
 
 
 @dataclass
@@ -99,6 +110,7 @@ class GameSession:
         self.light_state = "LOBBY"
         self.finish_line: Optional[GeoPoint] = None
         self.geofence = GeofenceBoundary()
+        self.validator = MotionValidator()
         self.players: dict[str, PlayerState] = {}
         self.logs: list[str] = []
         self._next_number = 1
@@ -112,7 +124,9 @@ class GameSession:
         self.logs.insert(0, f"[{ts}] {message}")
         self.logs = self.logs[:40]
 
-    def add_player(self, player_id: str, name: str, avatar: str = "runner:#00e676") -> PlayerState:
+    def add_player(
+        self, player_id: str, name: str, avatar: str = "runner:#00e676"
+    ) -> PlayerState:
         contestant_no = f"{self._next_number:03d}"
         self._next_number += 1
         player = PlayerState(
@@ -140,16 +154,20 @@ class GameSession:
             return None
 
         if player.last_point is not None:
-            speed = MotionValidator.calculate_filtered_speed(player.last_point, point)
+            violated, speed, reason = self.validator.evaluate_movement(
+                player.last_point, point, self.light_state
+            )
         else:
-            speed = 0.0
+            violated, speed, reason = False, 0.0, "OK"
 
         player.last_point = point
         player.speed_mps = speed
 
         # Enforce arena rules only after the Host starts the match (not in LOBBY/ENDED)
         if self.light_state in ("GREEN", "RED"):
-            if len(self.geofence.vertices) >= 3 and not self.geofence.contains(point):
+            if len(self.geofence.vertices) >= 3 and not self.geofence.is_inside(
+                point.lat, point.lon
+            ):
                 player.status = "ELIMINATED"
                 player.elimination_reason = "OUT_OF_BOUNDS"
                 self.log(f"ELIMINATED: #{player.contestant_no} {player.name} left geofence.")
@@ -159,16 +177,19 @@ class GameSession:
                 dist_to_finish = MotionValidator.haversine_distance(point, self.finish_line)
                 if dist_to_finish <= self.FINISH_RADIUS_M:
                     player.status = "WINNER"
-                    self.log(f"WINNER: #{player.contestant_no} {player.name} crossed finish line!")
+                    self.light_state = "ENDED"
+                    self.log(
+                        f"WINNER: #{player.contestant_no} {player.name} crossed finish line!"
+                    )
                     return {"event": "winner"}
 
-            if self.light_state == "RED" and speed > MotionValidator.RED_SPEED_LIMIT_MPS:
+            if violated:
                 player.status = "ELIMINATED"
-                player.elimination_reason = "MOTION_DETECTED"
+                player.elimination_reason = reason
                 self.log(
                     f"ELIMINATED: #{player.contestant_no} {player.name} moved ({speed:.2f} m/s) on RED."
                 )
-                return {"event": "eliminated", "reason": "MOTION_DETECTED"}
+                return {"event": "eliminated", "reason": reason}
 
         return None
 
