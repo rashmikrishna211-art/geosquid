@@ -7,43 +7,25 @@ import { TextScramble } from '../components/motion-primitives/TextScramble';
 import { BorderTrail } from '../components/motion-primitives/BorderTrail';
 import { SlidingNumber } from '../components/motion-primitives/SlidingNumber';
 import { GlowEffect } from '../components/motion-primitives/GlowEffect';
-
-const AVATAR_ICONS = {
-  doll: '👧',
-  p456: '🟢',
-  runner: '🏃',
-  squid: '🦑',
-  circle: '○',
-  triangle: '△',
-  square: '□',
-  vip: '🎭',
-};
-
-function parseAvatar(raw) {
-  const [id, customColor] = (raw || 'runner').split(':');
-  return {
-    glyph: AVATAR_ICONS[id] || '🏃',
-    customColor: customColor || null,
-  };
-}
+import { soundEngine } from '../utils/soundEngine';
+import {
+  AvatuneSprite,
+  parsePlayerAvatar,
+  renderAvatuneSvgHtml,
+} from '../utils/avatuneConfig';
 
 function buildAvatarMarkerIcon(player) {
   const isRunning = player.status === 'ACTIVE' && (player.speed_mps ?? 0) > 0.4;
-  const { glyph, customColor } = parseAvatar(player.avatar);
+  const { color } = parsePlayerAvatar(player.avatar);
 
   const ringColor =
     player.status === 'ELIMINATED'
       ? '#ff1744'
       : player.status === 'WINNER'
       ? '#ffb300'
-      : customColor || '#00e676';
+      : color || '#00e676';
 
-  const avatarGlyph =
-    player.status === 'ELIMINATED'
-      ? '💀'
-      : player.status === 'WINNER'
-      ? '🏆'
-      : glyph;
+  const avatarSvg = renderAvatuneSvgHtml(player.avatar, 30);
 
   const pulseHtml =
     player.status === 'ACTIVE'
@@ -54,14 +36,22 @@ function buildAvatarMarkerIcon(player) {
     ? `<span class="absolute -bottom-2.5 left-1/2 -translate-x-1/2 rounded bg-emerald-400 px-1 font-['JetBrains_Mono'] text-[8px] font-black text-zinc-950 shadow">RUN</span>`
     : '';
 
+  const statusTag =
+    player.status === 'ELIMINATED'
+      ? `<span class="absolute -top-2 -right-2 rounded bg-rose-600 px-1 font-['JetBrains_Mono'] text-[8px] font-black text-white">OUT</span>`
+      : player.status === 'WINNER'
+      ? `<span class="absolute -top-2 -right-2 rounded bg-amber-400 px-1 font-['JetBrains_Mono'] text-[8px] font-black text-zinc-950">WIN</span>`
+      : '';
+
   return L.divIcon({
     className: 'smooth-gps',
     html: `
-      <div class="relative flex h-9 w-9 items-center justify-center rounded-full border-2 bg-zinc-900 shadow-lg ${
+      <div class="relative flex h-9 w-9 items-center justify-center overflow-visible rounded-full border-2 bg-zinc-900 shadow-lg ${
         isRunning ? 'runner-bob' : ''
       }" style="border-color:${ringColor}">
         ${pulseHtml}
-        <span class="text-base leading-none">${avatarGlyph}</span>
+        <span class="flex h-full w-full items-center justify-center overflow-hidden rounded-full">${avatarSvg}</span>
+        ${statusTag}
         ${runBadgeHtml}
       </div>
     `,
@@ -158,7 +148,10 @@ export default function HostDashboard() {
 
     socket.on('state_update', (data) => setGameState(data));
 
-    return () => socket.disconnect();
+    return () => {
+      soundEngine.stopLoop();
+      socket.disconnect();
+    };
   }, []);
 
   useEffect(() => {
@@ -170,7 +163,7 @@ export default function HostDashboard() {
       if (!layersRef.current.finishMarker) {
         const flagIcon = L.divIcon({
           className: '',
-          html: `<div class="flex h-8 w-8 items-center justify-center rounded-full border-2 border-amber-300 bg-zinc-950 text-base shadow-xl">🏁</div>`,
+          html: `<div class="flex h-8 w-8 items-center justify-center rounded-full border-2 border-amber-300 bg-zinc-950 font-['JetBrains_Mono'] text-[10px] font-black text-amber-300 shadow-xl">FIN</div>`,
           iconSize: [32, 32],
           iconAnchor: [16, 16],
         });
@@ -224,7 +217,7 @@ export default function HostDashboard() {
 
       const isRunning = p.status === 'ACTIVE' && (p.speed_mps ?? 0) > 0.4;
       const metaKey = `${p.status}|${isRunning}|${p.avatar}`;
-      const { customColor } = parseAvatar(p.avatar);
+      const { color } = parsePlayerAvatar(p.avatar);
 
       const coords = layersRef.current.trailCoords[p.player_id] || [];
       const lastCoord = coords[coords.length - 1];
@@ -239,7 +232,7 @@ export default function HostDashboard() {
           ? '#ff1744'
           : p.status === 'WINNER'
           ? '#ffb300'
-          : customColor || '#00e676';
+          : color || '#00e676';
 
       if (!layersRef.current.trails[p.player_id]) {
         layersRef.current.trails[p.player_id] = L.polyline(coords, {
@@ -339,12 +332,16 @@ export default function HostDashboard() {
       ? '#ff1744'
       : '#00e5ff';
 
+  const selectedParsed = selectedPlayer ? parsePlayerAvatar(selectedPlayer.avatar) : null;
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-zinc-950 text-zinc-100">
       <aside className="flex w-[400px] flex-col gap-3 overflow-y-auto border-r border-zinc-800 bg-zinc-900/90 p-4">
         <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
           <div className="flex items-center gap-2 text-lg font-extrabold tracking-wide">
-            <span className="tracking-widest text-[#ff0055]">○△□</span>
+            <span className="font-['JetBrains_Mono'] text-xs tracking-widest text-[#ff0055]">
+              ○△□
+            </span>
             <span>GEOSQUID</span>
           </div>
           <span className="rounded bg-zinc-800 px-2 py-0.5 font-['JetBrains_Mono'] text-xs text-zinc-400">
@@ -429,22 +426,29 @@ export default function HostDashboard() {
           <div className="grid grid-cols-2 gap-2">
             <motion.button
               whileTap={{ scale: 0.96 }}
-              onClick={() => socketRef.current?.emit('set_light', { light_state: 'GREEN' })}
+              onClick={() => {
+                soundEngine.startGreenLightLoop();
+                socketRef.current?.emit('set_light', { light_state: 'GREEN' });
+              }}
               className="rounded-lg bg-emerald-500 py-2.5 text-sm font-extrabold text-zinc-950 shadow-lg shadow-emerald-500/20 hover:bg-emerald-400"
             >
-              ○ GREEN LIGHT
+              GREEN LIGHT
             </motion.button>
             <motion.button
               whileTap={{ scale: 0.96 }}
-              onClick={() => socketRef.current?.emit('set_light', { light_state: 'RED' })}
+              onClick={() => {
+                soundEngine.playRedLightStop();
+                socketRef.current?.emit('set_light', { light_state: 'RED' });
+              }}
               className="rounded-lg bg-rose-600 py-2.5 text-sm font-extrabold text-white shadow-lg shadow-rose-600/25 hover:bg-rose-500"
             >
-              △ RED LIGHT
+              RED LIGHT
             </motion.button>
           </div>
           <button
             onClick={() => {
               if (confirm('End match and purge all volatile GPS coordinates from RAM?')) {
+                soundEngine.stopLoop();
                 socketRef.current?.emit('purge_data');
               }
             }}
@@ -471,7 +475,7 @@ export default function HostDashboard() {
             <AnimatePresence initial={false}>
               {gameState.players.map((p) => {
                 const isRunning = p.status === 'ACTIVE' && (p.speed_mps ?? 0) > 0.4;
-                const { glyph } = parseAvatar(p.avatar);
+                const parsed = parsePlayerAvatar(p.avatar);
                 return (
                   <motion.div
                     layout
@@ -488,7 +492,12 @@ export default function HostDashboard() {
                     className="flex cursor-pointer items-center justify-between rounded-lg border border-zinc-800/90 bg-zinc-900 px-2.5 py-1.5 text-xs hover:border-zinc-600"
                   >
                     <span className="flex items-center gap-2 font-bold">
-                      <span className="text-base">{glyph}</span>
+                      <span
+                        style={{ borderColor: parsed.color }}
+                        className="flex h-7 w-7 items-center justify-center overflow-hidden rounded-full border bg-zinc-950"
+                      >
+                        <AvatuneSprite themeKey={parsed.themeKey} seed={parsed.seed} size={24} />
+                      </span>
                       <span>
                         <span className="font-['JetBrains_Mono'] text-[11px] text-zinc-400">
                           #{p.contestant_no || '001'}{' '}
@@ -548,7 +557,7 @@ export default function HostDashboard() {
         </AnimatePresence>
 
         <AnimatePresence>
-          {selectedPlayer && (
+          {selectedPlayer && selectedParsed && (
             <motion.div
               initial={{ opacity: 0, scale: 0.94 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -559,7 +568,16 @@ export default function HostDashboard() {
               <div className="relative">
                 <div className="flex items-center justify-between">
                   <span className="flex items-center gap-2 font-bold text-white">
-                    <span className="text-lg">{parseAvatar(selectedPlayer.avatar).glyph}</span>
+                    <span
+                      style={{ borderColor: selectedParsed.color }}
+                      className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border bg-zinc-900"
+                    >
+                      <AvatuneSprite
+                        themeKey={selectedParsed.themeKey}
+                        seed={selectedParsed.seed}
+                        size={28}
+                      />
+                    </span>
                     <span>
                       #{selectedPlayer.contestant_no || '001'} {selectedPlayer.name}
                     </span>

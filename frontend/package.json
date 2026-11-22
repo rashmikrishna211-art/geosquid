@@ -10,6 +10,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@avatune/cyberpunk-theme": "^1.0.0",
+    "@avatune/kyute-theme": "^2.1.1",
+    "@avatune/micah-theme": "^3.1.1",
+    "@avatune/miniavs-theme": "^2.1.1",
+    "@avatune/react": "^2.2.0",
     "leaflet": "^1.9.4",
     "lucide-react": "^1.77.0",
     "motion": "^14.14.0",

@@ -2,27 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import L from 'leaflet';
 import { motion } from 'motion/react';
+import { Shuffle } from 'lucide-react';
 import { GlowEffect } from '../components/motion-primitives/GlowEffect';
 import { TextScramble } from '../components/motion-primitives/TextScramble';
-
-export const AVATAR_OPTIONS = [
-  { id: 'doll', icon: '👧', label: 'Young-hee' },
-  { id: 'p456', icon: '🟢', label: 'No. 456' },
-  { id: 'runner', icon: '🏃', label: 'Sprinter' },
-  { id: 'squid', icon: '🦑', label: 'Squid' },
-  { id: 'circle', icon: '○', label: 'Guard ○' },
-  { id: 'triangle', icon: '△', label: 'Guard △' },
-  { id: 'square', icon: '□', label: 'Guard □' },
-  { id: 'vip', icon: '🎭', label: 'Front Man' },
-];
-
-export const AVATAR_COLORS = [
-  { id: '#00e676', label: 'Emerald' },
-  { id: '#00e5ff', label: 'Cyan' },
-  { id: '#ff0055', label: 'Pink' },
-  { id: '#ffb300', label: 'Gold' },
-  { id: '#a855f7', label: 'Violet' },
-];
+import { soundEngine } from '../utils/soundEngine';
+import {
+  AVATUNE_THEMES,
+  AVATAR_COLORS,
+  AvatuneSprite,
+  renderAvatuneSvgHtml,
+} from '../utils/avatuneConfig';
 
 function getDistanceAndBearing(lat1, lon1, lat2, lon2) {
   const R = 6371000;
@@ -51,7 +40,8 @@ function getDistanceAndBearing(lat1, lon1, lat2, lon2) {
 export default function PlayerClient() {
   const [roomCode, setRoomCode] = useState('');
   const [name, setName] = useState('');
-  const [avatar, setAvatar] = useState('p456');
+  const [themeKey, setThemeKey] = useState('kyute');
+  const [avatarSeed, setAvatarSeed] = useState('456-arena');
   const [avatarColor, setAvatarColor] = useState('#00e676');
   const [consent, setConsent] = useState(false);
   const [error, setError] = useState('');
@@ -94,6 +84,9 @@ export default function PlayerClient() {
     socket.on('light_changed', (data) => {
       setLightState(data.light_state);
       navigator.vibrate?.(data.light_state === 'RED' ? [250, 80, 250] : 100);
+      if (data.light_state === 'GREEN') soundEngine.startGreenLightLoop();
+      else if (data.light_state === 'RED') soundEngine.playRedLightStop();
+      else soundEngine.stopLoop();
     });
 
     socket.on('player_alert', (alert) => {
@@ -101,9 +94,11 @@ export default function PlayerClient() {
         setStatus('ELIMINATED');
         setReason(alert.reason || 'MOTION_DETECTED');
         navigator.vibrate?.([500, 150, 500]);
+        soundEngine.playEliminated();
       } else if (alert.event === 'winner') {
         setStatus('WINNER');
         navigator.vibrate?.([150, 80, 150, 80, 300]);
+        soundEngine.playWinner();
       }
     });
 
@@ -123,11 +118,12 @@ export default function PlayerClient() {
       if (watchIdRef.current !== null) {
         navigator.geolocation?.clearWatch(watchIdRef.current);
       }
+      soundEngine.stopLoop();
       socket.disconnect();
     };
   }, []);
 
-  const chosenAvatar = AVATAR_OPTIONS.find((a) => a.id === avatar) || AVATAR_OPTIONS[0];
+  const encodedAvatar = `${themeKey}:${avatarSeed.trim() || '456-arena'}:${avatarColor}`;
 
   useEffect(() => {
     if (!joined || !miniMapContainerRef.current || miniMapRef.current) return;
@@ -177,7 +173,7 @@ export default function PlayerClient() {
       if (!miniLayersRef.current.finishMarker) {
         const flagIcon = L.divIcon({
           className: '',
-          html: `<div class="flex h-7 w-7 items-center justify-center rounded-full border-2 border-amber-300 bg-zinc-950 text-sm shadow-lg">🏁</div>`,
+          html: `<div class="flex h-7 w-7 items-center justify-center rounded-full border-2 border-amber-300 bg-zinc-950 font-['JetBrains_Mono'] text-[10px] font-black text-amber-300 shadow-lg">FIN</div>`,
           iconSize: [28, 28],
           iconAnchor: [14, 14],
         });
@@ -198,12 +194,13 @@ export default function PlayerClient() {
 
     if (telemetry.lat !== null && telemetry.lon !== null) {
       const pll = [telemetry.lat, telemetry.lon];
+      const svgHtml = renderAvatuneSvgHtml(encodedAvatar, 28);
       if (!miniLayersRef.current.playerMarker) {
         const pIcon = L.divIcon({
           className: 'smooth-gps',
-          html: `<div class="relative flex h-8 w-8 items-center justify-center rounded-full border-2 bg-zinc-950 text-base shadow-lg" style="border-color:${avatarColor}"><span class="gps-pulse-ring absolute -inset-1 rounded-full border" style="border-color:${avatarColor}"></span><span>${chosenAvatar.icon}</span></div>`,
-          iconSize: [32, 32],
-          iconAnchor: [16, 16],
+          html: `<div class="relative flex h-9 w-9 items-center justify-center overflow-hidden rounded-full border-2 bg-zinc-900 shadow-lg" style="border-color:${avatarColor}"><span class="gps-pulse-ring absolute -inset-1 rounded-full border" style="border-color:${avatarColor}"></span>${svgHtml}</div>`,
+          iconSize: [36, 36],
+          iconAnchor: [18, 18],
         });
         miniLayersRef.current.playerMarker = L.marker(pll, { icon: pIcon }).addTo(map);
       } else {
@@ -228,7 +225,7 @@ export default function PlayerClient() {
     } else if (finishLine) {
       map.setView([finishLine.lat, finishLine.lon], 19);
     }
-  }, [telemetry.lat, telemetry.lon, finishLine, geofence, avatarColor, chosenAvatar.icon]);
+  }, [telemetry.lat, telemetry.lon, finishLine, geofence, avatarColor, encodedAvatar]);
 
   const startGpsStream = (socket) => {
     if (!navigator.geolocation) {
@@ -255,6 +252,10 @@ export default function PlayerClient() {
     );
   };
 
+  const randomizeSeed = () => {
+    setAvatarSeed(`sq-${Math.floor(100 + Math.random() * 900)}`);
+  };
+
   const handleJoin = (e) => {
     e.preventDefault();
     if (!roomCode.trim() || !name.trim()) {
@@ -265,10 +266,11 @@ export default function PlayerClient() {
       setError('Accept Ethical GPS Consent to enter the arena.');
       return;
     }
+    soundEngine.unlock();
     socketRef.current?.emit('join_room_player', {
       room_code: roomCode.trim().toUpperCase(),
       name: name.trim(),
-      avatar: `${avatar}:${avatarColor}`,
+      avatar: encodedAvatar,
     });
   };
 
@@ -281,57 +283,63 @@ export default function PlayerClient() {
             onSubmit={handleJoin}
             className="relative rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl"
           >
-            <div className="text-lg tracking-[0.3em] text-[#ff0055]">○ △ □</div>
+            <div className="font-['JetBrains_Mono'] text-xs tracking-[0.35em] text-[#ff0055]">
+              CIRCLE · TRIANGLE · SQUARE
+            </div>
             <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-white">
               GEOSQUID PLAYER
             </h1>
             <p className="text-xs text-zinc-400">BCS501 Real-Time GPS Telemetry Node</p>
 
-            <div className="mt-4">
-              <label className="block font-['JetBrains_Mono'] text-[11px] uppercase tracking-wider text-zinc-400">
-                Room Code
-              </label>
-              <input
-                type="text"
-                placeholder="SQ-0000"
-                value={roomCode}
-                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-                className="mt-1 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3.5 py-2.5 font-['JetBrains_Mono'] text-base uppercase tracking-widest text-white focus:border-cyan-400 focus:outline-none"
-              />
+            <div className="mt-4 flex items-center gap-3.5 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+              <div
+                style={{ borderColor: avatarColor }}
+                className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 bg-zinc-900"
+              >
+                <AvatuneSprite themeKey={themeKey} seed={avatarSeed} size={58} />
+              </div>
+              <div className="flex-1">
+                <div className="font-['JetBrains_Mono'] text-[10px] uppercase tracking-wider text-zinc-400">
+                  Avatune Seed
+                </div>
+                <div className="mt-1 flex gap-1.5">
+                  <input
+                    type="text"
+                    value={avatarSeed}
+                    onChange={(e) => setAvatarSeed(e.target.value)}
+                    placeholder="seed"
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 font-['JetBrains_Mono'] text-xs text-white focus:border-cyan-400 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={randomizeSeed}
+                    aria-label="Randomize Avatar Seed"
+                    className="flex items-center justify-center rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 text-zinc-300 hover:border-cyan-400 hover:text-white"
+                  >
+                    <Shuffle className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div className="mt-3">
               <label className="block font-['JetBrains_Mono'] text-[11px] uppercase tracking-wider text-zinc-400">
-                Callsign
-              </label>
-              <input
-                type="text"
-                maxLength={20}
-                placeholder="Enter your nickname"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="mt-1 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3.5 py-2.5 text-sm text-white focus:border-cyan-400 focus:outline-none"
-              />
-            </div>
-
-            <div className="mt-3">
-              <label className="block font-['JetBrains_Mono'] text-[11px] uppercase tracking-wider text-zinc-400">
-                Customize Avatar &amp; Ring Color
+                Avatune Style Theme
               </label>
               <div className="mt-1.5 grid grid-cols-4 gap-2">
-                {AVATAR_OPTIONS.map((item) => (
+                {Object.values(AVATUNE_THEMES).map((item) => (
                   <button
                     type="button"
                     key={item.id}
-                    onClick={() => setAvatar(item.id)}
-                    style={avatar === item.id ? { borderColor: avatarColor } : undefined}
+                    onClick={() => setThemeKey(item.id)}
+                    style={themeKey === item.id ? { borderColor: avatarColor } : undefined}
                     className={`flex flex-col items-center justify-center rounded-xl border py-2 text-xs transition ${
-                      avatar === item.id
+                      themeKey === item.id
                         ? 'bg-zinc-800 text-white shadow-md'
                         : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:border-zinc-600'
                     }`}
                   >
-                    <span className="text-lg leading-none">{item.icon}</span>
+                    <AvatuneSprite themeKey={item.id} seed={avatarSeed} size={34} />
                     <span className="mt-1 text-[10px] font-medium">{item.label}</span>
                   </button>
                 ))}
@@ -356,6 +364,33 @@ export default function PlayerClient() {
                   ))}
                 </div>
               </div>
+            </div>
+
+            <div className="mt-3">
+              <label className="block font-['JetBrains_Mono'] text-[11px] uppercase tracking-wider text-zinc-400">
+                Room Code
+              </label>
+              <input
+                type="text"
+                placeholder="SQ-0000"
+                value={roomCode}
+                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+                className="mt-1 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3.5 py-2.5 font-['JetBrains_Mono'] text-base uppercase tracking-widest text-white focus:border-cyan-400 focus:outline-none"
+              />
+            </div>
+
+            <div className="mt-3">
+              <label className="block font-['JetBrains_Mono'] text-[11px] uppercase tracking-wider text-zinc-400">
+                Callsign
+              </label>
+              <input
+                type="text"
+                maxLength={20}
+                placeholder="Enter your nickname"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3.5 py-2.5 text-sm text-white focus:border-cyan-400 focus:outline-none"
+              />
             </div>
 
             <label className="mt-4 flex cursor-pointer items-start gap-2.5 rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-xs leading-relaxed text-zinc-300">
@@ -423,9 +458,9 @@ export default function PlayerClient() {
         <div className="flex items-center gap-2.5">
           <span
             style={{ borderColor: avatarColor }}
-            className="flex h-10 w-10 items-center justify-center rounded-full border-2 bg-black/45 text-xl"
+            className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full border-2 bg-black/45"
           >
-            {chosenAvatar.icon}
+            <AvatuneSprite themeKey={themeKey} seed={avatarSeed} size={36} />
           </span>
           <div>
             <div className="text-sm font-extrabold">
@@ -444,10 +479,10 @@ export default function PlayerClient() {
       <div className="my-3 text-center">
         <div
           style={{ borderColor: avatarColor }}
-          className="mx-auto mb-2 flex h-16 w-16 items-center justify-center rounded-full border-2 bg-black/35 text-3xl shadow-xl"
+          className="mx-auto mb-2 flex h-20 w-20 items-center justify-center overflow-hidden rounded-full border-2 bg-black/35 shadow-xl"
         >
-          <span className={status === 'ACTIVE' && telemetry.speed > 0.4 ? 'runner-bob inline-block' : ''}>
-            {chosenAvatar.icon}
+          <span className={status === 'ACTIVE' && telemetry.speed > 0.4 ? 'runner-bob inline-flex' : 'inline-flex'}>
+            <AvatuneSprite themeKey={themeKey} seed={avatarSeed} size={72} />
           </span>
         </div>
         <h2 className="text-4xl font-black tracking-tight">
@@ -459,7 +494,7 @@ export default function PlayerClient() {
             : status === 'WINNER'
             ? 'FINISH LINE CROSSED'
             : lightState === 'GREEN'
-            ? 'SPRINT TOWARD THE GOLD FLAG'
+            ? 'SPRINT TOWARD THE FINISH ZONE'
             : lightState === 'RED'
             ? 'DO NOT MOVE A MUSCLE'
             : 'WAITING FOR HOST SIGNAL'}
@@ -468,7 +503,7 @@ export default function PlayerClient() {
 
       <div className="overflow-hidden rounded-2xl border border-white/20 bg-zinc-950 shadow-xl">
         <div className="flex items-center justify-between border-b border-white/10 bg-black/60 px-3 py-1.5 font-['JetBrains_Mono'] text-[11px]">
-          <span className="font-bold text-amber-300">🏁 DESTINATION RADAR</span>
+          <span className="font-bold text-amber-300">DESTINATION RADAR</span>
           {navInfo ? (
             <span className="flex items-center gap-1.5 font-bold text-white">
               <span>{navInfo.distance.toFixed(1)} m</span>
