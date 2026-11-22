@@ -147,26 +147,28 @@ class GameSession:
         player.last_point = point
         player.speed_mps = speed
 
-        if len(self.geofence.vertices) >= 3 and not self.geofence.contains(point):
-            player.status = "ELIMINATED"
-            player.elimination_reason = "OUT_OF_BOUNDS"
-            self.log(f"ELIMINATED: #{player.contestant_no} {player.name} left geofence.")
-            return {"event": "eliminated", "reason": "OUT_OF_BOUNDS"}
+        # Enforce arena rules only after the Host starts the match (not in LOBBY/ENDED)
+        if self.light_state in ("GREEN", "RED"):
+            if len(self.geofence.vertices) >= 3 and not self.geofence.contains(point):
+                player.status = "ELIMINATED"
+                player.elimination_reason = "OUT_OF_BOUNDS"
+                self.log(f"ELIMINATED: #{player.contestant_no} {player.name} left geofence.")
+                return {"event": "eliminated", "reason": "OUT_OF_BOUNDS"}
 
-        if self.finish_line is not None:
-            dist_to_finish = MotionValidator.haversine_distance(point, self.finish_line)
-            if dist_to_finish <= self.FINISH_RADIUS_M:
-                player.status = "WINNER"
-                self.log(f"WINNER: #{player.contestant_no} {player.name} crossed finish line!")
-                return {"event": "winner"}
+            if self.finish_line is not None:
+                dist_to_finish = MotionValidator.haversine_distance(point, self.finish_line)
+                if dist_to_finish <= self.FINISH_RADIUS_M:
+                    player.status = "WINNER"
+                    self.log(f"WINNER: #{player.contestant_no} {player.name} crossed finish line!")
+                    return {"event": "winner"}
 
-        if self.light_state == "RED" and speed > MotionValidator.RED_SPEED_LIMIT_MPS:
-            player.status = "ELIMINATED"
-            player.elimination_reason = "MOTION_DETECTED"
-            self.log(
-                f"ELIMINATED: #{player.contestant_no} {player.name} moved ({speed:.2f} m/s) on RED."
-            )
-            return {"event": "eliminated", "reason": "MOTION_DETECTED"}
+            if self.light_state == "RED" and speed > MotionValidator.RED_SPEED_LIMIT_MPS:
+                player.status = "ELIMINATED"
+                player.elimination_reason = "MOTION_DETECTED"
+                self.log(
+                    f"ELIMINATED: #{player.contestant_no} {player.name} moved ({speed:.2f} m/s) on RED."
+                )
+                return {"event": "eliminated", "reason": "MOTION_DETECTED"}
 
         return None
 
