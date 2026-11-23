@@ -16,9 +16,15 @@ class GeoPoint:
 class MotionValidator:
     EARTH_RADIUS_M = 6371000.0
 
-    def __init__(self, speed_threshold_mps: float = 0.8, min_distance_m: float = 1.5):
+    def __init__(
+        self,
+        speed_threshold_mps: float = 0.8,
+        min_distance_m: float = 1.5,
+        max_accuracy_m: float = 25.0,
+    ):
         self.speed_threshold_mps = speed_threshold_mps
         self.min_distance_m = min_distance_m
+        self.max_accuracy_m = max_accuracy_m
 
     @classmethod
     def haversine_distance(cls, p1: GeoPoint, p2: GeoPoint) -> float:
@@ -36,6 +42,9 @@ class MotionValidator:
     def evaluate_movement(
         self, p1: GeoPoint, p2: GeoPoint, light_state: str
     ) -> tuple[bool, float, str]:
+        if p2.accuracy is not None and p2.accuracy > self.max_accuracy_m:
+            return False, 0.0, "GPS_JITTER_FILTERED"
+
         dt = p2.timestamp - p1.timestamp
         if dt <= 0:
             return False, 0.0, "OK"
@@ -80,7 +89,7 @@ class GeofenceBoundary:
 class PlayerState:
     player_id: str
     name: str
-    avatar: str = "runner:#00e676"
+    avatar: str = "kyute:player-01:#00e676"
     contestant_no: str = "001"
     status: str = "ACTIVE"
     last_point: Optional[GeoPoint] = None
@@ -125,14 +134,14 @@ class GameSession:
         self.logs = self.logs[:40]
 
     def add_player(
-        self, player_id: str, name: str, avatar: str = "runner:#00e676"
+        self, player_id: str, name: str, avatar: str = "kyute:player-01:#00e676"
     ) -> PlayerState:
         contestant_no = f"{self._next_number:03d}"
         self._next_number += 1
         player = PlayerState(
             player_id=player_id,
             name=name or f"Player {contestant_no}",
-            avatar=avatar or "runner:#00e676",
+            avatar=avatar or "kyute:player-01:#00e676",
             contestant_no=contestant_no,
         )
         self.players[player_id] = player
