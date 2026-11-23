@@ -57,6 +57,13 @@ export default function PlayerClient() {
 
   const socketRef = useRef(null);
   const watchIdRef = useRef(null);
+  const joinedRef = useRef(false);
+  const playerIdRef = useRef(null);
+  const joinPayloadRef = useRef({
+    room_code: '',
+    name: '',
+    avatar: '',
+  });
   const miniMapContainerRef = useRef(null);
   const miniMapRef = useRef(null);
   const miniLayersRef = useRef({
@@ -67,11 +74,65 @@ export default function PlayerClient() {
     fencePolygon: null,
   });
 
+  const encodedAvatar = `${themeKey}:${avatarSeed.trim() || '456-arena'}:${avatarColor}`;
+
+  joinedRef.current = joined;
+  joinPayloadRef.current = {
+    room_code: roomCode.trim().toUpperCase(),
+    name: name.trim(),
+    avatar: encodedAvatar,
+  };
+
+  const startGpsStream = (socket) => {
+    if (!navigator.geolocation) {
+      setError('Geolocation is not supported by this browser.');
+      return;
+    }
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        setTelemetry((prev) => ({
+          ...prev,
+          acc: Math.round(accuracy),
+          lat: latitude,
+          lon: longitude,
+        }));
+        if (typeof accuracy === 'number' && accuracy > 25) {
+          return;
+        }
+        socket.emit('gps_ping', {
+          lat: latitude,
+          lon: longitude,
+          accuracy,
+        });
+      },
+      (err) => setError(`GPS Error: ${err.message}`),
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+    );
+  };
+
   useEffect(() => {
-    const socket = io();
+    const socket = io({
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 800,
+      reconnectionDelayMax: 4000,
+    });
     socketRef.current = socket;
 
+    socket.on('connect', () => {
+      setError('');
+      if (joinedRef.current && joinPayloadRef.current.room_code) {
+        socket.emit('join_room_player', joinPayloadRef.current);
+      }
+    });
+
     socket.on('joined_success', (data) => {
+      playerIdRef.current = data.player?.player_id || socket.id;
       setPlayerInfo(data.player);
       setLightState(data.light_state);
       setJoined(true);
@@ -92,7 +153,7 @@ export default function PlayerClient() {
     socket.on('player_alert', (alert) => {
       if (alert.event === 'eliminated') {
         setStatus('ELIMINATED');
-        setReason(alert.reason || 'MOTION_DETECTED');
+        setReason(alert.reason || 'RED_LIGHT_MOVEMENT_VIOLATION');
         navigator.vibrate?.([500, 150, 500]);
         soundEngine.playEliminated();
       } else if (alert.event === 'winner') {
@@ -106,11 +167,20 @@ export default function PlayerClient() {
       setLightState(snapshot.light_state);
       setFinishLine(snapshot.finish_line || null);
       setGeofence(snapshot.geofence || []);
-      const me = snapshot.players.find((p) => p.player_id === socket.id);
+      const targetId = playerIdRef.current || socket.id;
+      const me = snapshot.players.find((p) => p.player_id === targetId);
       if (me) {
+        setPlayerInfo(me);
         setStatus(me.status);
         setReason(me.elimination_reason || '');
         setTelemetry((prev) => ({ ...prev, speed: me.speed_mps ?? 0 }));
+      }
+    });
+
+    socket.on('disconnect', () => {
+      if (watchIdRef.current !== null) {
+        navigator.geolocation?.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
       }
     });
 
@@ -122,8 +192,6 @@ export default function PlayerClient() {
       socket.disconnect();
     };
   }, []);
-
-  const encodedAvatar = `${themeKey}:${avatarSeed.trim() || '456-arena'}:${avatarColor}`;
 
   useEffect(() => {
     if (!joined || !miniMapContainerRef.current || miniMapRef.current) return;
@@ -226,31 +294,6 @@ export default function PlayerClient() {
       map.setView([finishLine.lat, finishLine.lon], 19);
     }
   }, [telemetry.lat, telemetry.lon, finishLine, geofence, avatarColor, encodedAvatar]);
-
-  const startGpsStream = (socket) => {
-    if (!navigator.geolocation) {
-      setError('Geolocation is not supported by this browser.');
-      return;
-    }
-    watchIdRef.current = navigator.geolocation.watchPosition(
-      (pos) => {
-        const { latitude, longitude, accuracy } = pos.coords;
-        setTelemetry((prev) => ({
-          ...prev,
-          acc: Math.round(accuracy),
-          lat: latitude,
-          lon: longitude,
-        }));
-        socket.emit('gps_ping', {
-          lat: latitude,
-          lon: longitude,
-          accuracy,
-        });
-      },
-      (err) => setError(`GPS Error: ${err.message}`),
-      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
-    );
-  };
 
   const randomizeSeed = () => {
     setAvatarSeed(`sq-${Math.floor(100 + Math.random() * 900)}`);

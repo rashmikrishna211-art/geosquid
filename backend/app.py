@@ -8,7 +8,13 @@ DIST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fronte
 
 app = Flask(__name__, static_folder=DIST_DIR, static_url_path="")
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "bcs501-sepm-geosquid")
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode="threading",
+    ping_interval=25,
+    ping_timeout=60,
+)
 
 sessions: dict[str, GameSession] = {}
 sid_to_room: dict[str, str] = {}
@@ -38,7 +44,8 @@ def handle_create_room():
 
 @socketio.on("rejoin_room_host")
 def handle_rejoin_host(data):
-    code = data.get("room_code", "").strip().upper()
+    data = data or {}
+    code = str(data.get("room_code", "")).strip().upper()
     session = sessions.get(code)
     if not session:
         emit("room_expired")
@@ -51,12 +58,24 @@ def handle_rejoin_host(data):
 
 @socketio.on("join_room_player")
 def handle_join_player(data):
-    code = data.get("room_code", "").strip().upper()
-    name = data.get("name", "Player").strip()[:20]
-    avatar = data.get("avatar", "runner:#00e676").strip()[:40]
+    data = data or {}
+    code = str(data.get("room_code", "")).strip().upper()
+    name = str(data.get("name", "Player")).strip()[:20] or "Player"
+    avatar = str(data.get("avatar", "kyute:player-01:#00e676")).strip()[:40] or "kyute:player-01:#00e676"
     session = sessions.get(code)
     if not session:
         emit("join_error", {"message": "Invalid Room Code. Verify on Host Console."})
+        return
+
+    # If this same socket re-emits join_room_player, avoid duplicate entries
+    if request.sid in session.players:
+        existing = session.players[request.sid]
+        existing.name = name
+        existing.avatar = avatar
+        join_room(code)
+        sid_to_room[request.sid] = code
+        emit("joined_success", {"player": existing.to_dict(), "light_state": session.light_state})
+        socketio.emit("state_update", session.snapshot(), room=code)
         return
 
     join_room(code)
@@ -70,10 +89,15 @@ def handle_join_player(data):
 def handle_finish_line(data):
     code = sid_to_room.get(request.sid)
     session = sessions.get(code)
-    if not session:
+    if not session or not data:
         return
-    session.finish_line = GeoPoint(lat=float(data["lat"]), lon=float(data["lon"]), timestamp=time.time())
-    session.log(f"Finish line calibrated at ({data['lat']:.5f}, {data['lon']:.5f}).")
+    try:
+        lat = float(data["lat"])
+        lon = float(data["lon"])
+    except (KeyError, TypeError, ValueError):
+        return
+    session.finish_line = GeoPoint(lat=lat, lon=lon, timestamp=time.time())
+    session.log(f"Finish line calibrated at ({lat:.5f}, {lon:.5f}).")
     socketio.emit("state_update", session.snapshot(), room=code)
 
 
@@ -81,9 +105,12 @@ def handle_finish_line(data):
 def handle_geofence(data):
     code = sid_to_room.get(request.sid)
     session = sessions.get(code)
-    if not session:
+    if not session or not data:
         return
-    vertices = [(float(pt[0]), float(pt[1])) for pt in data.get("vertices", [])]
+    try:
+        vertices = [(float(pt[0]), float(pt[1])) for pt in data.get("vertices", [])]
+    except (TypeError, ValueError, IndexError):
+        return
     session.geofence.vertices = vertices
     session.log(f"Geofence polygon active ({len(vertices)} vertices).")
     socketio.emit("state_update", session.snapshot(), room=code)
@@ -93,9 +120,9 @@ def handle_geofence(data):
 def handle_set_light(data):
     code = sid_to_room.get(request.sid)
     session = sessions.get(code)
-    if not session:
+    if not session or not data:
         return
-    new_state = data.get("light_state", "LOBBY")
+    new_state = str(data.get("light_state", "LOBBY")).strip().upper()
     session.set_light_state(new_state)
     socketio.emit("light_changed", {"light_state": new_state}, room=code)
     socketio.emit("state_update", session.snapshot(), room=code)
@@ -105,15 +132,18 @@ def handle_set_light(data):
 def handle_gps_ping(data):
     code = sid_to_room.get(request.sid)
     session = sessions.get(code)
-    if not session:
+    if not session or not data:
+        return
+    try:
+        point = GeoPoint(
+            lat=float(data["lat"]),
+            lon=float(data["lon"]),
+            timestamp=time.time(),
+            accuracy=float(data.get("accuracy", 5.0)),
+        )
+    except (KeyError, TypeError, ValueError):
         return
 
-    point = GeoPoint(
-        lat=float(data["lat"]),
-        lon=float(data["lon"]),
-        timestamp=time.time(),
-        accuracy=float(data.get("accuracy", 5.0)),
-    )
     alert = session.process_gps_ping(request.sid, point)
     if alert:
         emit("player_alert", alert, to=request.sid)
